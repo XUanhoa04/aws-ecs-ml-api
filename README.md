@@ -1,30 +1,34 @@
 # AWS ECS ML API Lab
 
-Một bài lab CI/CD hoàn chỉnh để đưa model machine learning từ laptop lên AWS ECS
-Fargate. Repo bao gồm API, model training gate, container Distroless chạy non-root,
-Terraform, GitHub Actions dùng OIDC, quan sát hệ thống và script dọn sạch tài nguyên.
+A complete CI/CD lab for taking a machine learning model from a laptop to AWS
+ECS Fargate. The repository includes an inference API, a model quality gate, a
+non-root Distroless container, Terraform infrastructure, GitHub Actions with
+OIDC, observability, and scripts that clean up the lab resources.
 
 > [!WARNING]
-> Lab tạo ALB, Fargate và CloudWatch có thể phát sinh phí. Hãy chạy
-> `./scripts/destroy.ps1` ngay sau khi thực hành. Thiết kế không dùng NAT Gateway
-> để giảm chi phí, nhưng đây không phải một bài lab hoàn toàn miễn phí.
+> This lab creates an Application Load Balancer, Fargate tasks, and CloudWatch
+> resources that may incur AWS charges. Run `./scripts/destroy.ps1` as soon as
+> you finish the lab. The design avoids a NAT Gateway to reduce cost, but the
+> lab is not guaranteed to be free.
 
-## Bạn sẽ học được gì?
+## What you will learn
 
-- Train và kiểm tra accuracy trước khi đóng gói model.
-- Thiết kế health check, validation và structured request log cho FastAPI.
-- Build image nhỏ hơn, chạy bằng user không có quyền root.
-- Dựng VPC, ECR, ECS Fargate, ALB, IAM, CloudWatch bằng Terraform.
-- Dùng GitHub OIDC thay cho access key dài hạn trong repository secrets.
-- Deploy image theo Git commit SHA, smoke-test và teardown có kiểm soát.
+- Train a model and enforce an accuracy threshold before packaging it.
+- Add health checks, input validation, and structured request logging to FastAPI.
+- Build a small container image that runs as a non-root user.
+- Provision a VPC, ECR, ECS Fargate, ALB, IAM, and CloudWatch with Terraform.
+- Use GitHub OIDC instead of storing long-lived AWS access keys in repository
+  secrets.
+- Deploy images tagged with a Git commit SHA, run smoke tests, and perform a
+  controlled teardown.
 
-## Kiến trúc
+## Architecture
 
 ```mermaid
 flowchart LR
     Dev[Developer] -->|push| GH[GitHub Actions]
     GH -->|OIDC short-lived credentials| IAM[AWS IAM Role]
-    GH -->|docker push : commit SHA| ECR[(Amazon ECR)]
+    GH -->|docker push: commit SHA| ECR[(Amazon ECR)]
     GH -->|terraform apply| S3[(S3 remote state)]
     User[API client] --> ALB[Application Load Balancer]
     ALB --> ECS[ECS Fargate service]
@@ -33,34 +37,35 @@ flowchart LR
     Scale[Application Auto Scaling] --> ECS
 ```
 
-Workload nằm trong VPC riêng với hai public subnet ở hai Availability Zone. Task
-được gán public IP để truy cập ECR và CloudWatch mà không cần NAT Gateway; security
-group chỉ cho phép ALB gọi cổng `8000` của task. Đây là lựa chọn có chủ đích cho
-lab ngắn hạn, không phải mẫu mạng production tuyệt đối.
+The workload runs in a dedicated VPC with two public subnets across two
+Availability Zones. Each task receives a public IP so it can reach ECR and
+CloudWatch without a NAT Gateway. Its security group only accepts traffic on
+port `8000` from the ALB. This is an intentional short-lived lab design, not a
+production network reference architecture.
 
-## Cấu trúc repo
+## Repository layout
 
 ```text
 app/                    FastAPI inference service
-tests/                  API tests
-train.py                deterministic training + accuracy gate
-Dockerfile              multi-stage Distroless non-root runtime image
-infra/bootstrap/        S3 remote state + GitHub OIDC deployment role
+tests/                  API and model service tests
+train.py                deterministic training and accuracy gate
+Dockerfile              multi-stage, non-root Distroless image
+infra/bootstrap/        S3 remote state and GitHub OIDC deployment role
 infra/                  ECS workload and observability
 scripts/                PowerShell lifecycle scripts
 .github/workflows/      CI and manual deploy/destroy workflows
 ```
 
-## Chạy local
+## Run locally
 
-Yêu cầu: Docker Desktop. Python local là tùy chọn.
+Docker Desktop is required. A local Python installation is optional.
 
 ```powershell
 docker build -t iris-api:local .
 docker run --rm -p 8000:8000 iris-api:local
 ```
 
-Mở `http://localhost:8000/docs`, hoặc thử:
+Open `http://localhost:8000/docs`, or try the API from PowerShell:
 
 ```powershell
 Invoke-RestMethod http://localhost:8000/health/ready
@@ -70,7 +75,7 @@ Invoke-RestMethod -Method Post http://localhost:8000/predict `
   -Body '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
 ```
 
-Nếu đã có Python 3.13:
+If Python 3.13 is installed:
 
 ```powershell
 python -m venv .venv
@@ -81,55 +86,58 @@ ruff check .
 pytest
 ```
 
-`train.py` dùng split có stratify và random seed cố định. Pipeline thất bại nếu
-accuracy thấp hơn 90%, vì vậy model kém chất lượng không đi tiếp đến bước build.
+`train.py` uses a stratified split and a fixed random seed. The pipeline fails
+if accuracy is below 90%, preventing a low-quality model from reaching the
+container build stage.
 
-## Deploy từ máy cá nhân
+## Deploy from your workstation
 
-### 1. Chuẩn bị
+### 1. Prerequisites
 
-- AWS CLI đã đăng nhập và có quyền tạo IAM, S3, VPC, ECR, ECS, ALB, CloudWatch.
-- Terraform `>= 1.10`, Docker Desktop, Git và GitHub CLI (`gh auth login`).
-- AWS region mặc định của lab là `us-east-1`.
+- AWS CLI authenticated with permission to create IAM, S3, VPC, ECR, ECS, ALB,
+  and CloudWatch resources.
+- Terraform `>= 1.10`, Docker Desktop, Git, and the GitHub CLI authenticated with
+  `gh auth login`.
+- The default AWS region for the lab is `us-east-1`.
 
-Kiểm tra danh tính trước khi tạo tài nguyên:
+Verify your identities before creating resources:
 
 ```powershell
 aws sts get-caller-identity
 gh repo view --json nameWithOwner
 ```
 
-### 2. Bootstrap state và GitHub OIDC
+### 2. Bootstrap the state backend and GitHub OIDC
 
-Lệnh này tạo S3 state bucket, GitHub OIDC provider, deployment role và tự ghi năm
-repository variables: `AWS_REGION`, `AWS_ROLE_ARN`, `TF_STATE_BUCKET`,
-`PROJECT_NAME`, `ENVIRONMENT`.
+The following command creates the S3 state bucket, GitHub OIDC provider, and
+deployment role. It also configures five repository variables: `AWS_REGION`,
+`AWS_ROLE_ARN`, `TF_STATE_BUCKET`, `PROJECT_NAME`, and `ENVIRONMENT`.
 
 ```powershell
 ./scripts/bootstrap.ps1
 ```
 
-OIDC provider là tài nguyên cấp account và chỉ được có một provider cho URL của
-GitHub. Nếu account đã có provider đó, dùng:
+An OIDC provider is an account-level resource, and only one can exist for the
+GitHub provider URL. If your account already has it, run:
 
 ```powershell
 ./scripts/bootstrap.ps1 -UseExistingOidcProvider
 ```
 
-### 3. Deploy và kiểm chứng
+### 3. Deploy and verify
 
 ```powershell
 ./scripts/deploy.ps1
 ```
 
-Script thực hiện tuần tự:
+The script performs these steps in order:
 
-1. Khởi tạo S3 backend với native state locking.
-2. Tạo ECR trước, build image và push tag là Git SHA.
-3. Dựng toàn bộ workload bằng Terraform.
-4. Chờ ALB healthy, gọi `/health/ready` và `/predict`.
+1. Initializes the S3 backend with native state locking.
+2. Creates ECR first, then builds and pushes an image tagged with the Git SHA.
+3. Provisions the complete workload with Terraform.
+4. Waits for a healthy ALB, then calls `/health/ready` and `/predict`.
 
-Các output hữu ích:
+Useful diagnostic commands:
 
 ```powershell
 terraform -chdir=infra output
@@ -137,22 +145,22 @@ aws ecs list-services --cluster ecs-ml-lab-dev
 aws logs tail /ecs/ecs-ml-lab-dev --follow
 ```
 
-### 4. Teardown
+### 4. Tear down the lab
 
-Xóa workload (kể cả inactive task-definition revisions), bootstrap và các
-GitHub variables do bootstrap đã tạo:
+Delete the workload, including inactive task-definition revisions, the
+bootstrap resources, and the GitHub variables created by bootstrap:
 
 ```powershell
 ./scripts/destroy.ps1
 ```
 
-Muốn giữ S3 state bucket và GitHub role cho lần lab sau:
+To retain the S3 state bucket and GitHub deployment role for another session:
 
 ```powershell
 ./scripts/destroy.ps1 -KeepBootstrap
 ```
 
-Sau teardown, kiểm tra nhanh rằng các resource mang tên lab không còn:
+After teardown, check that the named lab resources are gone:
 
 ```powershell
 aws ecs list-clusters
@@ -160,41 +168,45 @@ aws ecr describe-repositories --query "repositories[?contains(repositoryName, 'e
 aws elbv2 describe-load-balancers --query "LoadBalancers[?contains(LoadBalancerName, 'ecs-ml-lab')]"
 ```
 
-Lần đầu dùng Application Auto Scaling, AWS có thể tạo một service-linked role
-cấp account để tái sử dụng cho mọi ECS service. Role này không phát sinh phí và
-script không tự xóa vì có thể đang được workload khác dùng. Chỉ xóa thủ công khi
-bạn đã xác nhận account không còn ECS scalable target nào.
+When Application Auto Scaling is used for the first time, AWS may create an
+account-level service-linked role shared by all ECS services. The role has no
+direct cost, and the script does not remove it because another workload may be
+using it. Delete it manually only after confirming that the account has no ECS
+scalable targets.
 
-## GitHub Actions pipeline
+## GitHub Actions pipelines
 
-`CI` chạy khi mở pull request hoặc push lên `main`:
+The `CI` workflow runs for pull requests and pushes to `main`. It:
 
-- retrain model và áp accuracy gate;
-- Ruff + Pytest với coverage tối thiểu 85%;
-- build/start container và gọi endpoint thật;
-- format/validate cả hai Terraform root module.
+- retrains the model and enforces the accuracy gate;
+- runs Ruff and Pytest with a minimum coverage threshold of 85%;
+- builds and starts the container, then calls the real endpoints;
+- formats and validates both Terraform root modules.
 
-`AWS lab lifecycle` là workflow chạy thủ công:
+`AWS lab lifecycle` is a manually triggered workflow:
 
-- chọn `deploy` để build, push ECR, apply và smoke-test;
-- chọn `destroy` để xóa workload;
-- credentials là token OIDC ngắn hạn, không lưu AWS access key trên GitHub.
+- select `deploy` to build the image, push it to ECR, apply Terraform, and run
+  smoke tests;
+- select `destroy` to delete the workload;
+- AWS authentication uses a short-lived OIDC token, so no AWS access key is
+  stored on GitHub.
 
-Vào **Actions → AWS lab lifecycle → Run workflow**. Bootstrap phải tồn tại trước
-khi workflow có thể assume role. Workflow `destroy` giữ bootstrap; dùng script
-local để xóa cả bootstrap sau buổi học.
+Open **Actions → AWS lab lifecycle → Run workflow**. The bootstrap resources
+must exist before the workflow can assume its IAM role. The workflow's
+`destroy` action retains the bootstrap resources; use the local destroy script
+to remove everything after the lab.
 
 ## API contract
 
-| Method | Path | Mục đích |
+| Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/` | Metadata và version đang deploy |
-| `GET` | `/health/live` | Kiểm tra process còn sống |
-| `GET` | `/health/ready` | Kiểm tra model đã load |
-| `POST` | `/predict` | Phân loại Iris và trả xác suất từng class |
-| `GET` | `/docs` | Swagger UI |
+| `GET` | `/` | Return service metadata and the deployed version |
+| `GET` | `/health/live` | Confirm that the process is alive |
+| `GET` | `/health/ready` | Confirm that the model is loaded |
+| `POST` | `/predict` | Classify an Iris sample and return class probabilities |
+| `GET` | `/docs` | Open the Swagger UI |
 
-Ví dụ response:
+Example response:
 
 ```json
 {
@@ -210,29 +222,32 @@ Ví dụ response:
 }
 ```
 
-Mọi response có header `x-request-id`; cùng ID được ghi vào CloudWatch Logs để
-truy vết request.
+Every response includes an `x-request-id` header. The same ID is written to
+CloudWatch Logs so a request can be traced across the service.
 
-## Các bài mở rộng gợi ý
+## Suggested extensions
 
-1. Thêm ACM certificate và HTTPS listener; redirect HTTP sang HTTPS.
-2. Chuyển task vào private subnet và so sánh NAT Gateway với VPC endpoints.
-3. Thêm canary hoặc blue/green deployment bằng CodeDeploy.
-4. Đẩy model artifact riêng lên S3 và tải model theo version lúc startup.
-5. Thêm load test để quan sát policy autoscaling ở ngưỡng CPU 65%.
-6. Tách `dev` và `prod`, thêm GitHub Environment approval cho production.
+1. Add an ACM certificate and HTTPS listener, then redirect HTTP to HTTPS.
+2. Move tasks into private subnets and compare a NAT Gateway with VPC endpoints.
+3. Add canary or blue/green deployments with CodeDeploy.
+4. Store model artifacts separately in S3 and load a selected version at startup.
+5. Add load tests and observe the autoscaling policy at the 65% CPU threshold.
+6. Separate `dev` and `prod`, then require GitHub Environment approval for
+   production.
 
 ## Troubleshooting
 
-- **Task không start:** xem stopped reason bằng
-  `aws ecs describe-tasks`, sau đó đọc log group `/ecs/ecs-ml-lab-dev`.
-- **Target unhealthy:** kiểm tra target group health và security group; endpoint
-  ALB dùng `/health/ready`.
-- **ECR báo tag đã tồn tại:** repository dùng immutable tag. Tạo commit mới hoặc
-  truyền `-ImageTag` mới cho script.
-- **OIDC provider đã tồn tại:** bootstrap với `-UseExistingOidcProvider`.
-- **State bị lock:** không xóa lock tùy tiện; xác nhận workflow khác đã kết thúc,
-  rồi dùng `terraform force-unlock <LOCK_ID>` nếu Terraform hướng dẫn.
+- **The task does not start:** inspect the stopped reason with
+  `aws ecs describe-tasks`, then read the `/ecs/ecs-ml-lab-dev` log group.
+- **The target is unhealthy:** inspect target group health and the security
+  groups. The ALB health check calls `/health/ready`.
+- **ECR reports that the tag already exists:** the repository uses immutable
+  tags. Create a new commit or pass a new `-ImageTag` to the script.
+- **The OIDC provider already exists:** bootstrap with
+  `-UseExistingOidcProvider`.
+- **Terraform state is locked:** first confirm that no other workflow is active.
+  If Terraform instructs you to do so, run
+  `terraform force-unlock <LOCK_ID>` rather than deleting the lock manually.
 
 ## License
 
