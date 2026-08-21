@@ -1,0 +1,11 @@
+.git
+.github
+.pytest_cache
+.ruff_cache
+.terraform
+**/__pycache__
+infra
+scripts
+tests
+*.md
+model-metrics.json

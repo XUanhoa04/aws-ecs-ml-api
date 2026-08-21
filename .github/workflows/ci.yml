@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Python quality and model gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Retrain and enforce minimum accuracy
+        run: python train.py --output model.joblib --metrics model-metrics.json
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest
+
+  container:
+    name: Container smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build image
+        run: docker build --build-arg "APP_VERSION=${GITHUB_SHA}" -t iris-api:test .
+      - name: Start and verify image
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id=$(docker run --detach --publish 8000:8000 iris-api:test)
+          trap 'docker logs "$container_id"; docker rm --force "$container_id"' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:8000/health/ready; then
+              curl --fail --silent --request POST http://127.0.0.1:8000/predict \
+                --header 'content-type: application/json' \
+                --data '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+              exit 0
+            fi
+            echo "Waiting for container health, attempt $attempt/20"
+            sleep 2
+          done
+          exit 1
+
+  terraform:
+    name: Terraform checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.14.6"
+      - run: terraform fmt -check -recursive infra
+      - run: terraform -chdir=infra/bootstrap init -backend=false
+      - run: terraform -chdir=infra/bootstrap validate
+      - run: terraform -chdir=infra init -backend=false
+      - run: terraform -chdir=infra validate
