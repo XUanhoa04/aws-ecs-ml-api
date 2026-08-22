@@ -6,6 +6,7 @@ __pycache__/
 htmlcov/
 .venv/
 model-metrics.json
+uv.lock
 
 # Terraform local files and state
 **/.terraform/

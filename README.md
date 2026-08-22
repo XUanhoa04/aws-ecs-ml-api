@@ -201,12 +201,14 @@ to remove everything after the lab.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | Return service metadata and the deployed version |
+| `GET` | `/health` | Aggregate health overview and model readiness status |
 | `GET` | `/health/live` | Confirm that the process is alive |
 | `GET` | `/health/ready` | Confirm that the model is loaded |
-| `POST` | `/predict` | Classify an Iris sample and return class probabilities |
+| `POST` | `/predict` | Classify a single Iris sample and return class probabilities |
+| `POST` | `/predict/batch` | High-throughput batch classification (up to 100 samples) |
 | `GET` | `/docs` | Open the Swagger UI |
 
-Example response:
+Single prediction example response:
 
 ```json
 {
@@ -219,6 +221,27 @@ Example response:
     "virginica": 0.0
   },
   "model_version": "iris-rf-42"
+}
+```
+
+Batch prediction request:
+
+```json
+{
+  "items": [
+    {
+      "sepal_length": 5.1,
+      "sepal_width": 3.5,
+      "petal_length": 1.4,
+      "petal_width": 0.2
+    },
+    {
+      "sepal_length": 6.7,
+      "sepal_width": 3.0,
+      "petal_length": 5.2,
+      "petal_width": 2.3
+    }
+  ]
 }
 ```
 
