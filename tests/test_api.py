@@ -49,3 +49,28 @@ def test_predict_rejects_invalid_measurement(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_predict_rejects_zero_or_excessive_measurement(client: TestClient) -> None:
+    response_zero = client.post(
+        "/predict",
+        json={
+            "sepal_length": 0.0,
+            "sepal_width": 3.5,
+            "petal_length": 1.4,
+            "petal_width": 0.2,
+        },
+    )
+    assert response_zero.status_code == 422
+
+    response_excessive = client.post(
+        "/predict",
+        json={
+            "sepal_length": 25.0,
+            "sepal_width": 3.5,
+            "petal_length": 1.4,
+            "petal_width": 0.2,
+        },
+    )
+    assert response_excessive.status_code == 422
+

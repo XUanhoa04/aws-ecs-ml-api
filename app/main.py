@@ -97,10 +97,30 @@ class IrisFeatures(BaseModel):
         }
     )
 
-    sepal_length: float = Field(gt=0, le=20)
-    sepal_width: float = Field(gt=0, le=20)
-    petal_length: float = Field(gt=0, le=20)
-    petal_width: float = Field(gt=0, le=20)
+    sepal_length: float = Field(
+        gt=0,
+        le=20,
+        description="Sepal length in centimeters (0 < value <= 20)",
+        examples=[5.1],
+    )
+    sepal_width: float = Field(
+        gt=0,
+        le=20,
+        description="Sepal width in centimeters (0 < value <= 20)",
+        examples=[3.5],
+    )
+    petal_length: float = Field(
+        gt=0,
+        le=20,
+        description="Petal length in centimeters (0 < value <= 20)",
+        examples=[1.4],
+    )
+    petal_width: float = Field(
+        gt=0,
+        le=20,
+        description="Petal width in centimeters (0 < value <= 20)",
+        examples=[0.2],
+    )
 
     def as_list(self) -> list[float]:
         return [
@@ -112,11 +132,19 @@ class IrisFeatures(BaseModel):
 
 
 class PredictionResponse(BaseModel):
-    class_id: int
-    class_name: str
-    confidence: float
-    probabilities: dict[str, float]
-    model_version: str
+    class_id: int = Field(description="Predicted target class index (0, 1, or 2)")
+    class_name: str = Field(
+        description="Predicted flower class name (setosa, versicolor, virginica)"
+    )
+    confidence: float = Field(
+        description="Predicted probability score of the winning class"
+    )
+    probabilities: dict[str, float] = Field(
+        description="Class-wise prediction probability distribution"
+    )
+    model_version: str = Field(
+        description="Unique identifier of the loaded model artifact"
+    )
 
 
 @app.middleware("http")
