@@ -189,7 +189,19 @@ class BatchPredictionResponse(BaseModel):
 async def request_context(request: Request, call_next) -> Response:
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
     started_at = time.perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - started_at) * 1000
+        logger.exception(
+            "request_id=%s method=%s path=%s unhandled_error=%s duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            str(exc),
+            duration_ms,
+        )
+        raise
     duration_ms = (time.perf_counter() - started_at) * 1000
     response.headers["x-request-id"] = request_id
     logger.info(
@@ -213,6 +225,16 @@ def home() -> dict[str, str]:
     }
 
 
+@app.get("/health", tags=["health"])
+def health_overview() -> dict[str, Any]:
+    return {
+        "status": "healthy" if model_service.ready else "degraded",
+        "version": APP_VERSION,
+        "model_ready": model_service.ready,
+        "model_version": model_service.model_version,
+    }
+
+
 @app.get("/health/live", tags=["health"])
 def liveness() -> dict[str, str]:
     return {"status": "alive"}
@@ -226,6 +248,7 @@ def readiness() -> dict[str, str]:
             detail="Model is not loaded",
         )
     return {"status": "ready", "model_version": model_service.model_version}
+
 
 
 @app.post("/predict", response_model=PredictionResponse, tags=["inference"])
