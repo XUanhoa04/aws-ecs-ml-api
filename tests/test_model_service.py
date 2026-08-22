@@ -13,6 +13,9 @@ def test_model_service_starts_unavailable(tmp_path: Path) -> None:
     assert service.model_version == "unavailable"
     with pytest.raises(RuntimeError, match="not loaded"):
         service.predict([5.1, 3.5, 1.4, 0.2])
+    with pytest.raises(RuntimeError, match="not loaded"):
+        service.predict_batch([[5.1, 3.5, 1.4, 0.2]])
+
 
 
 def test_model_service_rejects_legacy_artifact(tmp_path: Path) -> None:

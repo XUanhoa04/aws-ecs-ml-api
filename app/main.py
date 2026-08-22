@@ -67,6 +67,29 @@ class ModelService:
         }
         return class_id, classes[class_id], probabilities
 
+    def predict_batch(
+        self, items: list[list[float]]
+    ) -> list[tuple[int, str, dict[str, float]]]:
+        if self.bundle is None:
+            raise RuntimeError("Model is not loaded")
+
+        model = self.bundle["model"]
+        classes: list[str] = self.bundle["classes"]
+        matrix = np.asarray(items, dtype=np.float64)
+        probabilities_matrix = model.predict_proba(matrix)
+        results: list[tuple[int, str, dict[str, float]]] = []
+        for probabilities_raw in probabilities_matrix:
+            class_id = int(np.argmax(probabilities_raw))
+            probabilities = {
+                class_name: round(float(probability), 6)
+                for class_name, probability in zip(
+                    classes, probabilities_raw, strict=True
+                )
+            }
+            results.append((class_id, classes[class_id], probabilities))
+        return results
+
+
 
 model_service = ModelService(MODEL_PATH)
 
@@ -147,6 +170,21 @@ class PredictionResponse(BaseModel):
     )
 
 
+class IrisBatchRequest(BaseModel):
+    items: list[IrisFeatures] = Field(
+        min_length=1,
+        max_length=100,
+        description="List of Iris feature sets to predict (1 to 100 items)",
+    )
+
+
+class BatchPredictionResponse(BaseModel):
+    predictions: list[PredictionResponse] = Field(
+        description="List of prediction results corresponding to input items"
+    )
+    count: int = Field(description="Total number of items evaluated in the batch")
+
+
 @app.middleware("http")
 async def request_context(request: Request, call_next) -> Response:
     request_id = request.headers.get("x-request-id", str(uuid.uuid4()))
@@ -207,3 +245,32 @@ def predict(features: IrisFeatures) -> PredictionResponse:
         probabilities=probabilities,
         model_version=model_service.model_version,
     )
+
+
+@app.post(
+    "/predict/batch",
+    response_model=BatchPredictionResponse,
+    tags=["inference"],
+)
+def predict_batch(batch: IrisBatchRequest) -> BatchPredictionResponse:
+    try:
+        raw_features = [item.as_list() for item in batch.items]
+        raw_results = model_service.predict_batch(raw_features)
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+    predictions = [
+        PredictionResponse(
+            class_id=class_id,
+            class_name=class_name,
+            confidence=max(probabilities.values()),
+            probabilities=probabilities,
+            model_version=model_service.model_version,
+        )
+        for class_id, class_name, probabilities in raw_results
+    ]
+    return BatchPredictionResponse(predictions=predictions, count=len(predictions))
+

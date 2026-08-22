@@ -74,3 +74,38 @@ def test_predict_rejects_zero_or_excessive_measurement(client: TestClient) -> No
     )
     assert response_excessive.status_code == 422
 
+
+def test_predict_batch(client: TestClient) -> None:
+    response = client.post(
+        "/predict/batch",
+        json={
+            "items": [
+                {
+                    "sepal_length": 5.1,
+                    "sepal_width": 3.5,
+                    "petal_length": 1.4,
+                    "petal_width": 0.2,
+                },
+                {
+                    "sepal_length": 6.7,
+                    "sepal_width": 3.0,
+                    "petal_length": 5.2,
+                    "petal_width": 2.3,
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    assert len(body["predictions"]) == 2
+    assert body["predictions"][0]["class_name"] == "setosa"
+    assert body["predictions"][1]["class_name"] == "virginica"
+
+
+def test_predict_batch_empty_validation(client: TestClient) -> None:
+    response = client.post("/predict/batch", json={"items": []})
+    assert response.status_code == 422
+
+
